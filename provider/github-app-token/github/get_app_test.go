@@ -23,6 +23,7 @@ func TestGetApp(t *testing.T) {
 	}
 
 	ts := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		if r.Method != http.MethodGet {
 			t.Errorf("unexpected method: want GET, got %s", r.Method)
 		}
@@ -34,20 +35,32 @@ func TestGetApp(t *testing.T) {
 			return
 		}
 		auth = strings.TrimPrefix(auth, "Bearer ")
-		token, err := jwt.Parse([]byte(auth), jwt.FindKeyFunc(func(header *jws.Header) (sig.SigningKey, error) {
-			if want, got := jwa.RS256, header.Algorithm(); want != got {
-				t.Errorf("unexpected algorithm: want %s, got %s", want, got)
-			}
-			key, err := readPublicKeyForTest()
-			if err != nil {
-				return nil, err
-			}
-			return jwa.RS256.New().NewSigningKey(key), nil
-		}))
+		p := &jwt.Parser{
+			KeyFinder: jwt.FindKeyFunc(func(ctx context.Context, header *jws.Header) (sig.SigningKey, error) {
+				if want, got := jwa.RS256, header.Algorithm(); want != got {
+					t.Errorf("unexpected algorithm: want %s, got %s", want, got)
+				}
+				key, err := readPublicKeyForTest()
+				if err != nil {
+					return nil, err
+				}
+				return jwa.RS256.New().NewSigningKey(key), nil
+			}),
+			AlgorithmVerifier:     jwt.AllowedAlgorithms{jwa.RS256},
+			AudienceVerifier:      jwt.UnsecureAnyAudience,
+			IssuerSubjectVerifier: jwt.Issuer("123456"),
+		}
+		token, err := p.Parse(ctx, []byte(auth))
 		if err != nil {
 			t.Error(err)
 			rw.WriteHeader(http.StatusUnauthorized)
 			return
+		}
+		if token.Header.Type() != "JWT" {
+			t.Errorf("unexpected token type: want %q, got %q", "JWT", token.Header.Type())
+		}
+		if !token.Header.Base64() {
+			t.Errorf("unexpected token header: want %t, got %t", true, token.Header.Base64())
 		}
 		claims := token.Claims
 		iss := claims.Issuer
